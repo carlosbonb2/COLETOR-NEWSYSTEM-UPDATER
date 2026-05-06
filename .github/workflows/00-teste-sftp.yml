@@ -1,0 +1,24 @@
+name: 00 - Teste de Conexão SFTP (Launcher)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-connection:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📝 Criar arquivo de teste local
+        run: |
+          mkdir deploy_payload
+          echo "Conexao efetuada com sucesso via Chave Privada sem senha!" > deploy_payload/teste_conexao.txt
+
+      - name: 🚀 Testar Conexão SFTP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SFTP_HOST }}
+          port: 1891
+          username: ${{ secrets.SFTP_USERNAME }}
+          key: ${{ secrets.SFTP_KEY }}
+          source: "deploy_payload/*"
+          target: "/home/newsyste/public_html/auxiliares/endpoint_coletor/updates_staging/ColetorLauncherUpdaterVersions/"
+          strip_components: 1
