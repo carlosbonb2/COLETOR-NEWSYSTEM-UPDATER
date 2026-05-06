@@ -11,18 +11,15 @@ on:
         required: true
 
 jobs:
-  time-travel:
+  build-rollback:
     if: github.event.inputs.confirm == 'EXECUTAR'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
 
       - name: ⏱️ Voltar no Tempo
-        run: |
-          $TAG = "${{ github.event.inputs.version_tag }}"
-          git checkout $TAG
+        run: git checkout ${{ github.event.inputs.version_tag }}
         shell: pwsh
 
       - uses: actions/setup-dotnet@v4
@@ -31,7 +28,8 @@ jobs:
       - name: 🔨 Recompilar como Staging
         run: |
           $ver = "${{ github.event.inputs.version_tag }}".TrimStart('v')
-          dotnet publish "LauncherUpdater/LauncherUpdater.csproj" --configuration Release --self-contained true -r win-x64 --output ./publish /p:Version=$ver /p:DefineConstants="STAGING" /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
+          $csproj = Get-ChildItem -Path . -Filter *.csproj -Recurse | Select-Object -First 1
+          dotnet publish "$($csproj.FullName)" --configuration Release --self-contained true -r win-x64 --output ./publish /p:Version=$ver /p:DefineConstants="STAGING" /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
         shell: pwsh
 
       - name: 📦 Estruturar Pacote Rollback
@@ -39,24 +37,41 @@ jobs:
         run: |
           $targetTag = "${{ github.event.inputs.version_tag }}-rc"
           $ver = "${{ github.event.inputs.version_tag }}".TrimStart('v')
-          
           New-Item -ItemType Directory -Force -Path "./deploy_payload/$targetTag"
 
-          $zipName = "launcherupdater_release.zip"
+          $zipName = "updater.zip"
           Compress-Archive -Path ./publish/* -DestinationPath "./deploy_payload/$targetTag/$zipName"
           $hash = (Get-FileHash -Path "./deploy_payload/$targetTag/$zipName").Hash
 
-          $urlZipProtegida = "https://aux.newsystem.net.br/endpoint_pdv/download_gate.php?file=LauncherUpdaterVersions/$targetTag/$zipName&env=staging"
+          $urlZip = "https://aux.newsystem.net.br/endpoint_coletor/download_gate.php?file=ColetorLauncherUpdaterVersions/$targetTag/$zipName&env=staging"
           
-          @{ Version = "$ver.0"; Url = $urlZipProtegida; Checksum = $hash } | ConvertTo-Json | Set-Content "./deploy_payload/$targetTag/LauncherUpdaterVersion.json"
-          
-          @{ CurrentFolder = $targetTag } | ConvertTo-Json | Set-Content "./deploy_payload/LauncherUpdaterVersionMaster.json"
+          @{ Version = "$ver.0"; Url = $urlZip; Checksum = $hash } | ConvertTo-Json | Set-Content "./deploy_payload/$targetTag/ColetorUpdaterVersion.json"
+          @{ CurrentFolder = $targetTag } | ConvertTo-Json | Set-Content "./deploy_payload/ColetorUpdaterVersionMaster.json"
 
-      - name: 🔑 Configurar Chave SSH
-        uses: webfactory/ssh-agent@v0.9.0
+      - name: ⬆️ Guardar Pacote para o Robô Linux
+        uses: actions/upload-artifact@v4
         with:
-          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+          name: rollback-payload
+          path: deploy_payload/
+          retention-days: 1
+
+  deploy-rollback:
+    needs: build-rollback
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⬇️ Puxar Pacote do Robô Windows
+        uses: actions/download-artifact@v4
+        with:
+          name: rollback-payload
+          path: deploy_payload
 
       - name: 🚀 Upload do Rollback via SCP
-        run: scp -v -r -o StrictHostKeyChecking=no -P 1891 ./deploy_payload/* "${{ secrets.SFTP_USERNAME }}@${{ secrets.SFTP_HOST }}:public_html/auxiliares/endpoint_pdv/updates_staging/LauncherUpdaterVersions/"
-        shell: bash
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SFTP_HOST }}
+          port: 1891
+          username: ${{ secrets.SFTP_USERNAME }}
+          key: ${{ secrets.SFTP_KEY }}
+          source: "deploy_payload/*"
+          target: "/home/newsyste/public_html/auxiliares/endpoint_coletor/updates_staging/ColetorLauncherUpdaterVersions/"
+          strip_components: 1

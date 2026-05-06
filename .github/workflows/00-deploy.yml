@@ -1,0 +1,166 @@
+name: 00 - Omni Deploy (Updater Coletor)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ambiente:
+        description: '🚀 Qual ambiente receberá a atualização?'
+        type: choice
+        required: true
+        options:
+          - 'Staging (Ambiente de Testes)'
+          - 'Produção (Cliente Final)'
+      senha_autorizacao:
+        description: '🔒 Senha de Autorização'
+        type: string
+        required: true
+
+jobs:
+  build-and-pack:
+    runs-on: windows-latest
+    outputs:
+      FINAL_TAG: ${{ steps.roteamento.outputs.FINAL_TAG }}
+      SFTP_TARGET: ${{ steps.roteamento.outputs.SFTP_TARGET }}
+      IS_PROD: ${{ steps.roteamento.outputs.IS_PROD }}
+    steps:
+      - name: 🛑 Verificar Senha de Autorização
+        shell: pwsh
+        run: |
+          $senhaDigitada = "${{ github.event.inputs.senha_autorizacao }}"
+          $senhaCorreta = "${{ secrets.DEPLOY_PASSWORD }}"
+          if ($senhaDigitada -ne $senhaCorreta) {
+              Write-Error "❌ ACESSO NEGADO: A senha de autorização está incorreta."
+              exit 1
+          }
+          Write-Host "✅ Senha validada com sucesso!"
+
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      - name: 🧠 Calcular Versão e Rotas Dinâmicas
+        id: roteamento
+        shell: pwsh
+        run: |
+          $latestTag = git tag -l "v*" | Where-Object { $_ -notmatch "-rc" } | Sort-Object { [version]($_ -replace '^v','') } -Descending | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($latestTag)) { $latestTag = "v1.0.0" }
+
+          $parts = $latestTag.TrimStart('v').Split('.')
+          $parts[$parts.Length - 1] = ([int]$parts[$parts.Length - 1] + 1).ToString()
+          $baseNextVer = "v" + ($parts -join ".")
+
+          $envChoice = "${{ github.event.inputs.ambiente }}"
+
+          if ($envChoice -match "Staging") {
+              $finalTag = "$baseNextVer-rc"
+              $sftpTarget = "/home/newsyste/public_html/auxiliares/endpoint_coletor/updates_staging/ColetorLauncherUpdaterVersions/"
+              $urlEnv = "staging"
+              $buildFlag = "STAGING"
+              $isProd = "false"
+          } else {
+              $finalTag = $baseNextVer
+              $sftpTarget = "/home/newsyste/public_html/auxiliares/endpoint_coletor/updates/ColetorLauncherUpdaterVersions/"
+              $urlEnv = "prod"
+              $buildFlag = "PROD"
+              $isProd = "true"
+          }
+
+          $rawVer = $baseNextVer.TrimStart('v')
+
+          echo "FINAL_TAG=$finalTag" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "RAW_VER=$rawVer" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "URL_ENV=$urlEnv" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "BUILD_FLAG=$buildFlag" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          echo "FINAL_TAG=$finalTag" >> $env:GITHUB_OUTPUT
+          echo "SFTP_TARGET=$sftpTarget" >> $env:GITHUB_OUTPUT
+          echo "IS_PROD=$isProd" >> $env:GITHUB_OUTPUT
+
+      - name: 🔨 Compilar Executável (Single File)
+        shell: pwsh
+        run: |
+          $csproj = Get-ChildItem -Path . -Filter *.csproj -Recurse | Select-Object -First 1
+          dotnet publish "$($csproj.FullName)" --configuration Release --self-contained true -r win-x64 --output ./publish /p:Version=${{ env.RAW_VER }} /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true /p:DefineConstants="${{ env.BUILD_FLAG }}"
+
+      - name: 🔐 Assinar Executável
+        shell: pwsh
+        run: |
+          $exeFile = Get-ChildItem -Path "./publish/*.exe" | Select-Object -First 1
+          if ($exeFile) { Move-Item $exeFile.FullName "publish\Coletor_Updater.exe" -Force }
+          $pfx = "${{ secrets.CODE_SIGNING_CERTIFICATE }}"
+          if ([string]::IsNullOrWhiteSpace($pfx)) { return }
+          try {
+              [System.IO.File]::WriteAllBytes("signing_cert.pfx", [System.Convert]::FromBase64String($pfx))
+              & "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe" sign /f "signing_cert.pfx" /p "${{ secrets.CODE_SIGNING_PASSWORD }}" /fd SHA256 /tr http://timestamp.digert.com /td SHA256 "publish\Coletor_Updater.exe"
+          } catch { Write-Host "⚠️ Assinatura ignorada." }
+
+      - name: 📦 Estruturar Pacote
+        shell: pwsh
+        run: |
+          $tag = "${{ env.FINAL_TAG }}"
+          New-Item -ItemType Directory -Force -Path "./deploy_payload/$tag"
+          
+          $zipName = "updater.zip"
+          Compress-Archive -Path ./publish/* -DestinationPath "./deploy_payload/$tag/$zipName"
+          $hash = (Get-FileHash -Path "./deploy_payload/$tag/$zipName").Hash
+          
+          # URL baseada no nome exato da pasta do servidor
+          $url = "https://aux.newsystem.net.br/endpoint_coletor/download_gate.php?file=ColetorLauncherUpdaterVersions/$tag/$zipName&env=${{ env.URL_ENV }}"
+          
+          @{ Version = "${{ env.RAW_VER }}.0"; Url = $url; Checksum = $hash } | ConvertTo-Json | Set-Content "./deploy_payload/$tag/ColetorUpdaterVersion.json"
+          @{ CurrentFolder = $tag } | ConvertTo-Json | Set-Content "./deploy_payload/ColetorUpdaterVersionMaster.json"
+
+      - name: ⬆️ Guardar Pacote para o Robô Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-payload
+          path: deploy_payload/
+          retention-days: 1
+
+  deploy-and-clean:
+    needs: build-and-pack
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write 
+    steps:
+      - name: ⬇️ Puxar Pacote do Robô Windows
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-payload
+          path: deploy_payload
+
+      - name: 🚀 Upload Roteado via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SFTP_HOST }}
+          port: 1891
+          username: ${{ secrets.SFTP_USERNAME }}
+          key: ${{ secrets.SFTP_KEY }}
+          source: "deploy_payload/*"
+          target: ${{ needs.build-and-pack.outputs.SFTP_TARGET }}
+          strip_components: 1
+
+      - name: 🧹 Faxina Inteligente no Servidor
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SFTP_HOST }}
+          port: 1891
+          username: ${{ secrets.SFTP_USERNAME }}
+          key: ${{ secrets.SFTP_KEY }}
+          script: |
+            cd ${{ needs.build-and-pack.outputs.SFTP_TARGET }}
+            ls -dt v* | tail -n +3 | xargs -r rm -rf
+
+      - name: 🌐 Criar Tag e Release no GitHub (Apenas Produção)
+        if: needs.build-and-pack.outputs.IS_PROD == 'true'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.build-and-pack.outputs.FINAL_TAG }}
+          name: Release ${{ needs.build-and-pack.outputs.FINAL_TAG }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
