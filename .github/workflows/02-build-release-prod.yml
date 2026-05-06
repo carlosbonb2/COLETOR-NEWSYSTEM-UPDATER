@@ -1,0 +1,63 @@
+name: 02 - Updater (Release)
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '!*-rc*'
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+        
+      - name: 🏷️ Extrair Versão
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          echo "VERSION_NUMBER=$ver" | Out-File -FilePath $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: 🔨 Build Produção
+        run: |
+          dotnet restore "LauncherUpdater/LauncherUpdater.csproj"
+          dotnet publish "LauncherUpdater/LauncherUpdater.csproj" --configuration Release --self-contained true -r win-x64 --output ./publish /p:TreatWarningsAsErrors=false /p:Version=${{ env.VERSION_NUMBER }} /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
+        shell: pwsh
+      
+      - name: 🔐 Assinar Executável
+        run: |
+          $pfx = "${{ secrets.CODE_SIGNING_CERTIFICATE }}"
+          if ([string]::IsNullOrWhiteSpace($pfx)) { return }
+          try {
+              [System.IO.File]::WriteAllBytes("signing_cert.pfx", [System.Convert]::FromBase64String($pfx))
+              & "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe" sign /f "signing_cert.pfx" /p "${{ secrets.CODE_SIGNING_PASSWORD }}" /fd SHA256 /tr http://timestamp.digert.com /td SHA256 "publish\LauncherUpdater.exe"
+          } catch { Write-Host "⚠️ Falha na assinatura." }
+        shell: pwsh
+        
+      - name: 📦 Estruturar Pacote Release
+        run: |
+          $folder = "${{ github.ref_name }}"
+          New-Item -ItemType Directory -Force -Path "./release_pack/$folder"
+          New-Item -ItemType Directory -Force -Path "./release_trigger"
+
+          $zipName = "launcherupdater_release.zip"
+          Compress-Archive -Path ./publish/* -DestinationPath "./release_pack/$folder/$zipName"
+          $hash = (Get-FileHash -Path "./release_pack/$folder/$zipName").Hash
+
+          $urlZipProtegida = "https://aux.newsystem.net.br/endpoint_pdv/download_gate.php?file=LauncherUpdaterVersions/$folder/$zipName&env=prod"
+
+          @{ Version = "${{ env.VERSION_NUMBER }}.0"; Url = $urlZipProtegida; Checksum = $hash } | ConvertTo-Json | Set-Content "./release_pack/$folder/LauncherUpdaterVersion.json"
+          @{ CurrentFolder = $folder } | ConvertTo-Json | Set-Content "./release_trigger/LauncherUpdaterVersionMaster.json"
+        shell: pwsh
+
+      - name: 🌐 Criar Release no GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./release_trigger/LauncherUpdaterVersionMaster.json
+            ./release_pack/${{ github.ref_name }}/*

@@ -1,0 +1,45 @@
+name: 03 - Promover Updater (Produção)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Tag exata para promover (ex: v1.0.0)'
+        required: true
+      confirmacao:
+        description: 'Trava: Digite PROMOVER para enviar ao cliente'
+        required: true
+        default: 'NÃO'
+
+jobs:
+  deploy-atomic:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      
+    steps:
+      - name: 🔒 Verificar Confirmação
+        run: |
+          if [ "${{ github.event.inputs.confirmacao }}" != "PROMOVER" ]; then
+              echo "❌ PROMOÇÃO CANCELADA."
+              exit 1
+          fi
+
+      - name: 📥 Baixar Artefatos da Release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          TAG="${{ github.event.inputs.version_tag }}"
+          mkdir -p "./deploy_payload/$TAG"
+          
+          gh release download "$TAG" --repo "${{ github.repository }}" --pattern "launcherupdater_release.zip" --dir "./deploy_payload/$TAG"
+          gh release download "$TAG" --repo "${{ github.repository }}" --pattern "LauncherUpdaterVersion.json" --dir "./deploy_payload/$TAG"
+          gh release download "$TAG" --repo "${{ github.repository }}" --pattern "LauncherUpdaterVersionMaster.json" --dir "./deploy_payload"
+
+      - name: 🔑 Configurar Chave SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+
+      - name: 🚀 Upload Produção via SCP
+        run: scp -v -r -o StrictHostKeyChecking=no -P 1891 ./deploy_payload/* "${{ secrets.SFTP_USERNAME }}@${{ secrets.SFTP_HOST }}:public_html/auxiliares/endpoint_pdv/updates/LauncherUpdaterVersions/"
+        shell: bash
