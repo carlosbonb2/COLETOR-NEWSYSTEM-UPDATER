@@ -1,4 +1,4 @@
-name: 00 - Omni Deploy (Updater Coletor)
+name: 00 - Deploy (Updater Coletor)
 
 on:
   workflow_dispatch:
