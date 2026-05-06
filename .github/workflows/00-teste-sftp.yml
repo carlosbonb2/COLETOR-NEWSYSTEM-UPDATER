@@ -1,4 +1,4 @@
-name: 00 - Teste de Conexão SFTP (Launcher)
+name: 00 - Teste de Conexão SFTP (LauncherUpdater)
 
 on:
   workflow_dispatch:
