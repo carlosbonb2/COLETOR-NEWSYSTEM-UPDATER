@@ -1,0 +1,22 @@
+name: 00 - Updater (CI)
+
+on:
+  push:
+    branches: [ 'main', 'master' ]
+    tags-ignore: [ '*' ]
+    paths:
+      - 'LauncherUpdater/**'
+      - '.github/workflows/**'
+
+jobs:
+  check-code-health:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      - name: 🛡️ Restaurar e Compilar (Teste Seco)
+        run: |
+          dotnet restore "LauncherUpdater/LauncherUpdater.csproj"
+          dotnet build "LauncherUpdater/LauncherUpdater.csproj" --configuration Release --no-restore
