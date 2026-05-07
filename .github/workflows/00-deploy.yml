@@ -109,8 +109,8 @@ jobs:
           # URL baseada no nome exato da pasta do servidor
           $url = "https://aux.newsystem.net.br/endpoint_coletor/download_gate.php?file=ColetorLauncherUpdaterVersions/$tag/$zipName&env=${{ env.URL_ENV }}"
           
-          @{ Version = "${{ env.RAW_VER }}.0"; Url = $url; Checksum = $hash } | ConvertTo-Json | Set-Content "./deploy_payload/$tag/ColetorUpdaterVersion.json"
-          @{ CurrentFolder = $tag } | ConvertTo-Json | Set-Content "./deploy_payload/ColetorUpdaterVersionMaster.json"
+          @{ Version = "${{ env.RAW_VER }}.0"; Url = $url; Checksum = $hash } | ConvertTo-Json | Set-Content "./deploy_payload/$tag/ColetorLauncherUpdaterVersions.json"
+          @{ CurrentFolder = $tag } | ConvertTo-Json | Set-Content "./deploy_payload/ColetorLauncherUpdaterVersions.json"
 
       - name: ⬆️ Guardar Pacote para o Robô Linux
         uses: actions/upload-artifact@v4
